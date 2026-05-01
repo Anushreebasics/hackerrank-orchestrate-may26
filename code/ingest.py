@@ -2,30 +2,23 @@ import os
 import glob
 import pickle
 from sentence_transformers import SentenceTransformer
-
-def chunk_text(text, max_chars=1500):
-    paragraphs = text.split('\n\n')
-    chunks = []
-    current_chunk = ""
-    for p in paragraphs:
-        if len(current_chunk) + len(p) < max_chars:
-            current_chunk += p + "\n\n"
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = p + "\n\n"
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    return chunks
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 def load_and_embed_corpus(data_dir):
     md_files = glob.glob(os.path.join(data_dir, '**', '*.md'), recursive=True)
+    
+    headers_to_split_on = [
+        ("#", "Header 1"),
+        ("##", "Header 2"),
+        ("###", "Header 3"),
+    ]
+    markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     
     documents = []
     for filepath in md_files:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-            chunks = chunk_text(content)
             
             parts = filepath.split(os.sep)
             try:
@@ -34,11 +27,21 @@ def load_and_embed_corpus(data_dir):
             except ValueError:
                 company = "Unknown"
                 
+            md_header_splits = markdown_splitter.split_text(content)
+            chunks = text_splitter.split_documents(md_header_splits)
+            
             for chunk in chunks:
-                if len(chunk.strip()) < 10:
+                if len(chunk.page_content.strip()) < 10:
                     continue
+                    
+                meta_str = ", ".join([f"{k}: {v}" for k, v in chunk.metadata.items()])
+                if meta_str:
+                    enriched_text = f"[{meta_str}]\n{chunk.page_content.strip()}"
+                else:
+                    enriched_text = chunk.page_content.strip()
+                    
                 documents.append({
-                    "text": chunk,
+                    "text": enriched_text,
                     "company": company,
                     "filepath": filepath
                 })
@@ -50,7 +53,7 @@ def load_and_embed_corpus(data_dir):
     model = SentenceTransformer('all-MiniLM-L6-v2')
     embeddings_matrix = model.encode(texts, convert_to_tensor=False)
     
-    # Save the documents and the fitted model
+    # Save the documents and the embeddings
     with open("knowledge_base.pkl", "wb") as f:
         pickle.dump({
             "documents": documents,
